@@ -1,0 +1,149 @@
+services:
+  # Engine padrão — AWQ INT4 via Marlin em Ampere (sm_86). GeForce não tem
+  # P2P: NCCL_P2P_DISABLE=1 é obrigatório no TP=2 (sem isso o primeiro
+  # coletivo trava com GPU a 100% — lição dos hp-gpu01/02).
+  sglang:
+    # Build local em cima da -runtime para repor deps Python faltantes
+    # (sgl-project/sglang#29650) — ver Dockerfile.sglang.
+    build:
+      context: .
+      dockerfile: Dockerfile.sglang
+    image: embrapa-io/sglang:v0.5.14-runtime-fix
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    shm_size: 8gb
+    ipc: host
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${SGLANG_NVIDIA_VISIBLE_DEVICES:-all}
+      # GeForce (RTX 3070) não suporta P2P — sem isso o NCCL tenta P2P
+      # "aparente" e o boot trava no 1º coletivo do TP=2.
+      - NCCL_P2P_DISABLE=${NCCL_P2P_DISABLE:-1}
+      # Exigido pelo SGLang para servir contexto acima do derivado do modelo
+      # (só relevante se um dia usarmos YaRN aqui).
+      - SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=${SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN:-0}
+    volumes:
+      - ${SGLANG_MODEL_PATH:?defina no .env (cp .env.example .env)}:/model:ro
+      - sglang-cache:/root/.cache
+    ports:
+      - ${PORT_SGLANG:-11435}:30000
+    command: >
+      python3 -m sglang.launch_server
+      --model-path /model
+      --host 0.0.0.0
+      --port 30000
+      --tensor-parallel-size ${SGLANG_TP_SIZE:-2}
+      --context-length ${SGLANG_CONTEXT_LENGTH:-32768}
+      --max-running-requests ${SGLANG_MAX_RUNNING_REQUESTS:-4}
+      --cuda-graph-max-bs ${SGLANG_CUDA_GRAPH_MAX_BS:-4}
+      --mem-fraction-static ${SGLANG_MEM_FRACTION:-0.88}
+      --served-model-name ${SGLANG_SERVED_MODEL_NAME:-qwen3-vl-8b}
+      --reasoning-parser ${SGLANG_REASONING_PARSER:-qwen3}
+      --tool-call-parser ${SGLANG_TOOL_CALL_PARSER:-qwen25}
+      --schedule-policy lpm
+      --enable-mixed-chunk
+      --trust-remote-code
+      ${SGLANG_EXTRA_ARGS:-}
+    restart: unless-stopped
+
+  # Fallback sob profile (mesma porta do sglang — não rodam juntos).
+  # Subir com: docker compose stop sglang && docker compose --profile vllm up -d vllm
+  # (trocar também o upstream do nginx.conf para vllm:8000)
+  vllm:
+    profiles: [vllm]
+    image: vllm/vllm-openai:v0.24.0-ubuntu2404
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    shm_size: 8gb
+    ipc: host
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${SGLANG_NVIDIA_VISIBLE_DEVICES:-all}
+      - VLLM_SLEEP_WHEN_IDLE=1
+      # GeForce (RTX 3070) não suporta P2P — ver comentário no sglang.
+      - NCCL_P2P_DISABLE=${NCCL_P2P_DISABLE:-1}
+    volumes:
+      - ${SGLANG_MODEL_PATH:?defina no .env (cp .env.example .env)}:/model:ro
+      - vllm-cache:/root/.cache
+    ports:
+      - ${PORT_SGLANG:-11435}:8000
+    # A imagem já traz ENTRYPOINT que invoca o servidor — fixamos explícito e
+    # o command carrega SÓ os argumentos. Quantização AWQ é auto-detectada do
+    # config.json (Marlin em sm_80+). Qwen3-VL Instruct: tool calling no
+    # formato <tool_call> JSON → parser 'hermes' no vLLM; sem thinking, então
+    # sem --reasoning-parser.
+    entrypoint: ["vllm", "serve"]
+    command: >
+      /model
+      --host 0.0.0.0
+      --port 8000
+      --served-model-name ${SGLANG_SERVED_MODEL_NAME:-qwen3-vl-8b}
+      --tensor-parallel-size ${SGLANG_TP_SIZE:-2}
+      --max-model-len ${SGLANG_CONTEXT_LENGTH:-32768}
+      --max-num-seqs ${SGLANG_MAX_RUNNING_REQUESTS:-4}
+      --gpu-memory-utilization ${SGLANG_MEM_FRACTION:-0.88}
+      --tool-call-parser ${VLLM_TOOL_CALL_PARSER:-hermes}
+      --enable-auto-tool-choice
+      --disable-custom-all-reduce
+      --trust-remote-code
+      ${VLLM_EXTRA_ARGS:-}
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama
+    environment:
+      # Força execução em CPU (embeddings). GPUs ficam dedicadas ao SGLang.
+      - CUDA_VISIBLE_DEVICES=
+      - NVIDIA_VISIBLE_DEVICES=
+      # Tuning conservador — CPU/RAM da workstation ainda não inventariadas
+      # (recalibrar no .env após `lscpu` / `free -h`).
+      - OLLAMA_CONTEXT_LENGTH=${OLLAMA_CONTEXT_LENGTH:-8192}
+      - OLLAMA_FLASH_ATTENTION=${OLLAMA_FLASH_ATTENTION:-1}
+      - OLLAMA_NEW_ENGINE=${OLLAMA_NEW_ENGINE:-1}
+      - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-2}
+      - OLLAMA_MAX_LOADED_MODELS=${OLLAMA_MAX_LOADED_MODELS:-3}
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-24h}
+      - OLLAMA_HOST=0.0.0.0:11434
+      # Tuning OpenMP
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-8}
+      - OMP_PROC_BIND=${OMP_PROC_BIND:-close}
+      - OMP_PLACES=${OMP_PLACES:-cores}
+    volumes:
+      - ${LLM_PATH:?defina no .env (cp .env.example .env)}:/root/.ollama
+      - ./custom:/custom:ro
+    expose:
+      - 11434
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:latest
+    ports:
+      # Porta padrão dos clientes — sem TLS por decisão arquitetural (rede
+      # interna do DC; terminação TLS futura fica no Kong).
+      - ${PORT_HTTP:-80}:11434
+      # Compatibilidade com o padrão dos demais GPU servers da plataforma.
+      - ${PORT_OLLAMA:-11434}:11434
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+volumes:
+  sglang-cache:
+  vllm-cache:
+
+networks:
+  default:
+    name: llm
+    external: true

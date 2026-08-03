@@ -1,0 +1,15 @@
+
+FROM qwen2.5:72b-instruct-q3_K_M
+
+SYSTEM """Você é um assistente prestativo. Sempre responda em português do Brasil. Seja conciso e use ferramentas diretamente quando disponíveis, sem pedir confirmação."""
+
+# Contexto - servidor dedicado 48GB
+PARAMETER num_ctx 24576
+
+# === PARÂMETROS CONSERVADORES PARA USO PROFISSIONAL ===
+PARAMETER temperature 0.3
+PARAMETER top_p 0.85
+PARAMETER repeat_penalty 1.1
+
+# Mantém modelo carregado
+PARAMETER num_keep -1
