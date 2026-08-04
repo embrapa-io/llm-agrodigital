@@ -1,7 +1,10 @@
 services:
   # Engine padrão — AWQ INT4 via Marlin em Ampere (sm_86). GeForce não tem
-  # P2P: NCCL_P2P_DISABLE=1 é obrigatório no TP=2 (sem isso o primeiro
-  # coletivo trava com GPU a 100% — lição dos hp-gpu01/02).
+  # P2P: NCCL_P2P_DISABLE=1 E --disable-custom-all-reduce são obrigatórios no
+  # TP=2 — o all-reduce custom sonda P2P via cudaDeviceCanAccessPeer, que nas
+  # GeForce responde "sim" para um P2P que não funciona, e o boot trava entre
+  # a alocação de KV e a captura dos CUDA graphs (validado em 04/08/2026;
+  # mesma lição dos hp-gpu01/02).
   sglang:
     # Build local em cima da -runtime para repor deps Python faltantes
     # (sgl-project/sglang#29650) — ver Dockerfile.sglang.
@@ -40,11 +43,12 @@ services:
       --tensor-parallel-size ${SGLANG_TP_SIZE:-2}
       --context-length ${SGLANG_CONTEXT_LENGTH:-32768}
       --max-running-requests ${SGLANG_MAX_RUNNING_REQUESTS:-4}
-      --cuda-graph-max-bs ${SGLANG_CUDA_GRAPH_MAX_BS:-4}
-      --mem-fraction-static ${SGLANG_MEM_FRACTION:-0.88}
+      --cuda-graph-max-bs-decode ${SGLANG_CUDA_GRAPH_MAX_BS:-4}
+      --mem-fraction-static ${SGLANG_MEM_FRACTION:-0.85}
       --served-model-name ${SGLANG_SERVED_MODEL_NAME:-qwen3-vl-8b}
       --reasoning-parser ${SGLANG_REASONING_PARSER:-qwen3}
-      --tool-call-parser ${SGLANG_TOOL_CALL_PARSER:-qwen25}
+      --tool-call-parser ${SGLANG_TOOL_CALL_PARSER:-qwen}
+      --disable-custom-all-reduce
       --schedule-policy lpm
       --enable-mixed-chunk
       --trust-remote-code
