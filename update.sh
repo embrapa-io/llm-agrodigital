@@ -19,7 +19,8 @@ docker compose up --build --force-recreate --remove-orphans --wait
 # -a: com tags pinadas a imagem antiga não vira dangling após um bump
 docker image prune -af
 
-# filtro: não apagar volumes órfãos de outras stacks do host
-docker volume prune -f --filter label=com.docker.compose.project=llm-agrodigital
+# filtro: não apagar volumes órfãos de outras stacks do host (o project name
+# do compose deriva do nome do diretório onde a stack está clonada)
+docker volume prune -f --filter "label=com.docker.compose.project=$(basename "$PWD")"
 
 docker builder prune -f
