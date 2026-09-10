@@ -130,6 +130,7 @@ docker compose exec ollama ollama pull embeddinggemma:300m
 ```bash
 ./update.sh                      # git pull + rebuild + prune (rotina de update)
 ./monitor.sh                     # nvidia-smi em loop (via container)
+sudo bash setup/dcgm.sh          # monitoramento das GPUs (DCGM exporter + Alloy)
 ./tunnel.sh                      # da estação: 11434/11435 locais → servidor
 docker compose logs -f sglang    # logs do engine
 ```
